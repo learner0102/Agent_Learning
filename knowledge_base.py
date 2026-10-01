@@ -6,6 +6,7 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from langchain_core.documents import Document
 from config import logger, API_KEY, BASE_URL, CHUNK_SIZE, CHUNK_OVERLAP, TOP_K_RETRIEVAL
+from langchain_core.embeddings import Embeddings
 
 # 导入外部markdown分块工具
 from chunks import _split_paragraphs_with_headings, _chunk_paragraphs
@@ -13,7 +14,7 @@ from chunks import _split_paragraphs_with_headings, _chunk_paragraphs
 
 class KnowledgeBase:
     """
-    RAG知识库管理类
+    RAG知识库管理类\n
     支持两种分块模式：
         1. 传统字符递归分割（默认）
         2. Markdown标题感知 + Token智能分块（use_heading_chunk=True）
@@ -27,6 +28,7 @@ class KnowledgeBase:
             chunk_tokens: int = 512,
             overlap_tokens: int = 100,
             batch_size: int = 32,
+            embeddings: Optional[Embeddings] = None,
     ):
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
@@ -38,11 +40,16 @@ class KnowledgeBase:
         self.doc_count = 0
 
         # 初始化Embedding模型（本地Qwen3‑Embedding‑0.6B）
-        self.embeddings = HuggingFaceEmbeddings(
-            model_name=r".\study_line\eni\models",
-            model_kwargs={"device":"cuda"},
-            encode_kwargs={"normalize_embeddings": True}
-        )
+        if embeddings is not None:
+            self.embeddings = embeddings
+            logger.info("知识库复用外部传入的 embeddings（不重复加载模型）")
+        else:
+            self.embeddings = HuggingFaceEmbeddings(
+                model_name=r"models",
+                model_kwargs={"device": "cuda"},
+                encode_kwargs={"normalize_embeddings": True},
+            )
+            logger.info("知识库自建 embeddings（首次加载模型）")
 
         # 传统文本分割器（字符模式）
         self.text_splitter = RecursiveCharacterTextSplitter(
@@ -134,6 +141,71 @@ class KnowledgeBase:
         logger.info(f"索引构建完成，耗时: {elapsed:.2f}s")
         return len(documents)
 
+    def add_file(self, file_path: str) -> int:
+        """
+        追加索引：把文件加到已有 vectorstore 里；如果还没有，等价于 load_and_index。
+        返回新增的文档块数。
+        """
+        # 1. 读文件 + 分块（复用 load_and_index 里的分块逻辑，抽成一个内部方法）
+        docs = self._file_to_documents(file_path)
+
+        if not docs:
+            logger.warning(f"[KB] 文件无有效内容: {file_path}")
+            return 0
+
+        # 2. 追加到已有索引，或首次创建
+        if self.vectorstore is None:
+            self.vectorstore = self._build_vector_store_batch(docs)
+        else:
+            # 分批追加，复用 batch_size 和容错
+            total = len(docs)
+            for start in range(0, total, self.batch_size):
+                batch = docs[start:start + self.batch_size]
+                try:
+                    self.vectorstore.add_documents(batch)
+                    processed = min(start + self.batch_size, total)
+                    logger.info(f"[KB] 追加 Embedding 进度: {processed}/{total}")
+                except Exception as e:
+                    logger.warning(f"[KB] 追加批次 {start} 失败，跳过: {e}")
+
+        self.doc_count += len(docs)
+        logger.info(f"[KB] 追加 {len(docs)} 个文档块，累计 {self.doc_count} 块")
+        return len(docs)
+
+    def _file_to_documents(self, file_path: str) -> List[Document]:
+        """把文件读成 Document 列表（和 load_and_index 里的分块逻辑保持一致）。"""
+        with open(file_path, "r", encoding="utf-8") as f:
+            raw_text = f.read()
+
+        if self.use_heading_chunk:
+            paragraphs = _split_paragraphs_with_headings(raw_text)
+            chunk_dicts = _chunk_paragraphs(paragraphs, self.chunk_tokens, self.overlap_tokens)
+            return [
+                Document(
+                    page_content=item["content"],
+                    metadata={
+                        "chunk_id": idx,
+                        "heading_path": item["heading_path"],
+                        "start_offset": item["start"],
+                        "end_offset": item["end"],
+                        "source": file_path,           # ← 新增：记录来源文件，方便删除
+                    }
+                )
+                for idx, item in enumerate(chunk_dicts)
+            ]
+        else:
+            lines = raw_text.splitlines()
+            raw_texts = [line.strip() for line in lines if line.strip()]
+            raw_text_join = "\n\n".join(raw_texts)
+            chunks = self.text_splitter.split_text(raw_text_join)
+            return [
+                Document(
+                    page_content=chunk,
+                    metadata={"chunk_id": i, "source": file_path}   # ← 记录来源
+                )
+                for i, chunk in enumerate(chunks)
+            ]
+
     def retrieve(self, query: str, top_k: int = TOP_K_RETRIEVAL) -> Tuple[List[str], List[float]]:
         """检索最相关的文档片段【原有接口保持不变】"""
         contents, scores, _ = self.retrieve_with_meta(query, top_k)
@@ -168,7 +240,7 @@ class KnowledgeBase:
             )
         return "\n\n".join(formatted)
 
-    # ====== 额外附赠：FAISS保存/加载磁盘方法，非常实用 ======
+    
     def save_faiss(self, save_dir: str):
         """把FAISS向量库保存到本地磁盘"""
         if self.vectorstore is None:

@@ -8,9 +8,16 @@ from datetime import datetime
 load_dotenv()
 
 # ============ 模型配置 ============
+## Qwen
 API_KEY = os.getenv("Qwen_API_KEY")
 BASE_URL = os.getenv("DB_URL")
-MODEL_NAME = os.getenv("MODEL_NAME", "qwen3.7-flash")
+MODEL_NAME = os.getenv("MODEL_NAME", "qwen3.8-max")
+
+## Ollama
+# API_KEY = "Ollama"
+# BASE_URL = "http://127.0.0.1:11434/v1"
+# MODEL_NAME = "qwen3.5:0.8b"
+
 
 # ============ RAG配置 ============
 CHUNK_SIZE = 500
@@ -24,13 +31,14 @@ TEMPERATURE = 0.7
 # ============ 日志配置 ============
 LOG_FILE = rf"study_line\eni\logs\agent_rag_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler(LOG_FILE, encoding='utf-8'),
-        logging.StreamHandler()
-    ]
-)
+if not logging.root.handlers:
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler(LOG_FILE, encoding='utf-8'),
+            logging.StreamHandler()
+        ]
+    )
 
 logger = logging.getLogger(__name__)

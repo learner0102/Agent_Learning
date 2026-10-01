@@ -10,7 +10,7 @@ import os
 import sys
 from datetime import datetime
 from pathlib import Path
-
+from config import logger
 
 def _redirect_stderr_to_file():
     """把 stderr 重定向到日志文件：MCP stdio 协议独占 stdout，且避免 stderr 管道阻塞子进程。"""
@@ -27,7 +27,7 @@ _redirect_stderr_to_file()
 
 
 def _log(msg: str):
-    print(f"[mcp_server] {msg}", file=sys.stderr, flush=True)
+    logger.info(msg)
 
 
 _log("starting import ...")

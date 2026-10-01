@@ -153,7 +153,7 @@ class RAGAgent:
                 "step": 0,
             })
 
-            final_answer = self._extract_final_answer(result["messages"])
+            final_answer = self._extract_final_answer(result["messages"], question)
             return {
                 "question": question,
                 "final_answer": final_answer,
@@ -173,9 +173,13 @@ class RAGAgent:
                 "tool_results": [],
             }
 
-    def _extract_final_answer(self, messages: List) -> str:
+    def _extract_final_answer(self, messages: List, question: str) -> str:
         """从消息历史里提取最终回答：倒序找第一个带文本内容的 AIMessage"""
         for msg in reversed(messages):
             if isinstance(msg, AIMessage) and msg.content:
                 return msg.content
-        return "抱歉，未能生成有效回答"
+
+        response_llm = self.llm.invoke([{"role":"user", "content":question}])
+        response_res = "Agent直接回复:\n" + response_llm.content
+        return response_res
+        

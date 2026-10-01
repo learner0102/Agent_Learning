@@ -4,9 +4,14 @@ logs/*
 memory_store/*
 venv/*
 .venv/
+knowledge_base/*
 __pycache__/
 .env
 *.log
 .vscode/
 .idea/
 *.db
+frontend/node_modules/*
+mysql_data/*
+Readme/
+tests/

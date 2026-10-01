@@ -17,22 +17,44 @@ from langchain_core.tools import StructuredTool, tool
 from knowledge_base import KnowledgeBase
 from config import logger
 from db_utils import DB_PATH, DB_SCHEMA_HINT, run_db_query
+from contextvars import ContextVar
+
+_current_user_id: ContextVar[str] = ContextVar("current_user_id", default="__shared__")
+def set_current_user(user_id: str):
+    """设置当前请求的 user_id。"""
+    _current_user_id.set(user_id)
+
+def get_current_user_id() -> str:
+    """读取当前请求的 user_id。"""
+    return _current_user_id.get()
 
 
 # ---------------- 本地工具工厂 ----------------
-def create_search_tool(kb: KnowledgeBase):
-    """知识库检索工具（闭包绑定 KnowledgeBase，复用主进程已加载的模型）"""
+def create_search_tool(app_ctx):
     @tool
     def search_knowledge_base(query: str) -> str:
-        """
-        从知识库中检索相关信息。当用户需要基于已有知识库（技术论文、行业报告等）回答问题、查找特定主题内容时使用。
-        输入：简洁明确的检索查询。
-        """
+        """从知识库中检索相关信息。包含公共知识库和用户上传的文档。"""
         try:
-            contents, scores = kb.retrieve(query, top_k=3)
-            if not contents:
+            user_id = get_current_user_id()
+            shared_kb = app_ctx.default_kb
+            user_kb = app_ctx.get_kb(user_id) if user_id != "__shared__" else None
+
+            merged = []
+            if shared_kb.vectorstore is not None:
+                c, s = shared_kb.retrieve(query, top_k=2)
+                merged.extend(zip(c, s))
+            if user_kb and user_kb.vectorstore is not None:
+                c, s = user_kb.retrieve(query, top_k=3)
+                merged.extend(zip(c, s))
+
+            if not merged:
                 return "知识库中未找到相关信息"
-            return kb.format_retrieved_context(contents, scores)
+
+            merged.sort(key=lambda x: x[1], reverse=True)
+            merged = merged[:5]
+            contents = [c for c, _ in merged]
+            scores = [s for _, s in merged]
+            return shared_kb.format_retrieved_context(contents, scores)
         except Exception as e:
             logger.error(f"检索失败: {e}")
             return f"检索过程出错: {str(e)}"
@@ -147,26 +169,21 @@ def _load_mcp_tools() -> List:
 
 
 # ---------------- 初始化入口 ----------------
-def init_tools(knowledge_base: KnowledgeBase):
-    """全本地工具：知识库检索 + 数据库 + 时间（eval.py 等不依赖 MCP 的场景使用）"""
+def init_tools(app_ctx):
+    """全本地工具：知识库检索 + 数据库 + 时间"""
     global _tools
     _tools = [
-        create_search_tool(knowledge_base),
+        create_search_tool(app_ctx),
         create_database_tool(),
         create_time_tool(),
     ]
     logger.info(f"本地工具初始化完成: {[t.name for t in _tools]}")
 
 
-def init_mcp_tools(knowledge_base: KnowledgeBase):
-    """混合模式：知识库检索走本地（复用主进程模型），数据库/时间走 MCP。
-
-    理由：知识库检索依赖本地 embedding 模型，若主进程与 MCP 子进程各加载一份会导致
-    CUDA OOM / 双份显存。因此重工具留在主进程，MCP 只负责轻量外部工具。
-    MCP 连不上时自动回退全本地，保证程序可用。
-    """
+def init_mcp_tools(app_ctx):
+    """混合模式：知识库检索走本地，数据库/时间走 MCP。"""
     global _tools
-    local_tools = [create_search_tool(knowledge_base)]
+    local_tools = [create_search_tool(app_ctx)]
     mcp_tools = _load_mcp_tools()
     if mcp_tools:
         _tools = local_tools + mcp_tools

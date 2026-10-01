@@ -10,7 +10,7 @@ from langchain_community.vectorstores import FAISS
 
 
 class MemoryManager:
-    def __init__(self, user_id: str, memory_dir: str = "study_line\\eni\\memory_store",
+    def __init__(self, user_id: str, memory_dir: str = "memory_store",
                  embeddings=None):
         self.user_id = user_id
         self.memory_dir = memory_dir
@@ -155,3 +155,18 @@ class MemoryManager:
 
     def get_long_all(self):
         return self.long_term
+
+    def delete_long_term(self, idx: int) -> bool:
+        """删除第 idx 条长期记忆，并重建索引、落盘。"""
+        if idx < 0 or idx >= len(self.long_term):
+            return False
+        self.long_term.pop(idx)
+        self._save_to_disk()
+        self._rebuild_index()
+        return True
+
+    def clear_long_term(self):
+        """清空所有长期记忆，并落盘。"""
+        self.long_term.clear()
+        self._save_to_disk()
+        self._rebuild_index()
